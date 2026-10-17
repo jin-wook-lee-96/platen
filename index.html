@@ -99,6 +99,48 @@
         word-break: break-all;
       }
 
+      .tear-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 7;
+        pointer-events: none;
+        background: #1c1b18;
+        overflow: hidden;
+      }
+
+      .tear-piece {
+        position: absolute;
+        inset: 0;
+        background: #d2c9b6;
+        animation: tearLeft 650ms ease-in forwards;
+        clip-path: polygon(0 0, 51% 0, 49% 12%, 52% 24%, 48% 36%, 51% 48%, 49% 60%, 52% 72%, 48% 84%, 50% 100%, 0 100%);
+      }
+
+      .tear-piece-right {
+        animation-name: tearRight;
+        clip-path: polygon(51% 0, 100% 0, 100% 100%, 50% 100%, 48% 84%, 52% 72%, 49% 60%, 51% 48%, 48% 36%, 52% 24%, 49% 12%);
+      }
+
+      .tear-piece .paper-sheet {
+        transition: none;
+      }
+
+      .paper-viewport.is-tearing > .paper-sheet {
+        visibility: hidden;
+      }
+
+      @keyframes tearLeft {
+        to { transform: translate(-45%, 20%) rotate(-12deg); opacity: 0; }
+      }
+
+      @keyframes tearRight {
+        to { transform: translate(45%, 20%) rotate(12deg); opacity: 0; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tear-piece { animation-duration: 1ms; }
+      }
+
       .ink-text {
         text-shadow: 0 0 0.6px rgba(25, 20, 15, 0.55);
       }
@@ -466,6 +508,15 @@
         outline-offset: 3px;
       }
 
+      .tear-btn {
+        margin-left: auto;
+      }
+
+      .tear-btn:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+
       /* ================= 3. 하단 안내 줄 ================= */
       .footer-hint {
         display: flex;
@@ -614,6 +665,8 @@
             <option value="Gowun Batang">고운바탕 · 부드럽게</option>
             <option value="Nanum Myeongjo">나눔명조 · 우아하게</option>
           </select>
+          <button type="button" id="tearBtn" class="font-select tear-btn"
+            title="현재 메모를 지우고 빈 새 종이로 시작">종이 찢기</button>
         </div>
 
         <!-- 3. 하단 안내 줄 -->
@@ -1121,6 +1174,8 @@
       const typeGuide = document.getElementById("typeGuide");
       const charCountEl = document.getElementById("charCount");
       const lineCountEl = document.getElementById("lineCount");
+      const tearBtn = document.getElementById("tearBtn");
+      let isTearing = false;
 
       // T자 활자 타격 애니메이션
       function triggerStrike() {
@@ -1181,6 +1236,7 @@
 
       // 키 하나 처리. 자모, 문장부호, 'BACK', ' ', 'Enter'
       function handleKey(k) {
+        if (isTearing) return;
         if (k === "BACK") {
           sound.playKeyClick(false);
           triggerStrike();
@@ -1317,6 +1373,12 @@
       };
 
       window.addEventListener("keydown", (e) => {
+        if (isTearing) {
+          if (e.key !== "Tab") e.preventDefault();
+          return;
+        }
+        // 버튼의 Enter / Space는 브라우저 기본 클릭 동작에 맡긴다.
+        if (e.target === tearBtn) return;
         // 글꼴 메뉴의 방향키·Enter·문자 탐색은 종이에 입력하지 않는다.
         if (e.target === fontSelect) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1396,6 +1458,7 @@
       }
 
       function startDemo(resetText = false) {
+        if (isTearing) return;
         if (resetText) {
           automata.reset();
           committedStr = INITIAL_TEXT;
@@ -1410,6 +1473,7 @@
 
       demoToggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (isTearing) return;
         sound.init();
         if (isDemoRunning) {
           stopDemo();
@@ -1421,10 +1485,63 @@
       });
 
       document.getElementById("clearBtn").addEventListener("click", () => {
+        if (isTearing) return;
         sound.init();
         stopDemo();
         startDemo(true);
         desk.focus();
+      });
+
+      tearBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (isTearing) return;
+        if (!window.confirm("메모를 지울까요? 종이를 찢으면 작성한 글은 되돌릴 수 없습니다.")) return;
+
+        stopDemo();
+        isTearing = true;
+        tearBtn.disabled = true;
+        const clearBtn = document.getElementById("clearBtn");
+        clearBtn.disabled = true;
+        demoToggleBtn.setAttribute("aria-disabled", "true");
+        paperViewport.setAttribute("aria-busy", "true");
+
+        // 현재 보이는 글을 복제해 찢는다. 중복 ID는 남기지 않는다.
+        const layer = document.createElement("div");
+        layer.className = "tear-layer";
+        layer.setAttribute("aria-hidden", "true");
+        for (const side of ["left", "right"]) {
+          const piece = document.createElement("div");
+          piece.className = `tear-piece tear-piece-${side}`;
+          const sheet = paperSheet.cloneNode(true);
+          sheet.removeAttribute("id");
+          sheet.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+          sheet.style.transform = getComputedStyle(paperSheet).transform;
+          piece.append(sheet);
+          layer.append(piece);
+        }
+
+        let fallbackTimer;
+        const finishTear = () => {
+          if (!isTearing) return;
+          clearTimeout(fallbackTimer);
+          layer.remove();
+          committedStr = "";
+          automata.reset();
+          demoIdx = 0;
+          paperViewport.classList.remove("is-tearing");
+          paperViewport.removeAttribute("aria-busy");
+          isTearing = false;
+          tearBtn.disabled = false;
+          clearBtn.disabled = false;
+          demoToggleBtn.removeAttribute("aria-disabled");
+          updateScreen();
+          desk.focus();
+        };
+        layer.addEventListener("animationend", finishTear, { once: true });
+        // 애니메이션이 꺼진 환경에서도 입력을 다시 허용한다.
+        fallbackTimer = setTimeout(finishTear, 850);
+        paperViewport.append(layer);
+        paperViewport.classList.add("is-tearing");
       });
 
       // 종이를 클릭하면 데모를 멈추고 바로 타이핑할 수 있게 포커스를 준다
